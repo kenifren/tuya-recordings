@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .const import (
+    CONF_CLOUD_ACTIVITY_PAUSED,
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
     CONF_LOOKBACK_DAYS,
@@ -22,6 +23,7 @@ from .const import (
     CONF_THUMBNAIL_SYNC_ENABLED,
     CONF_USER_ID,
     DEFAULT_LOOKBACK_DAYS,
+    DEFAULT_CLOUD_ACTIVITY_PAUSED,
     DEFAULT_MEDIA_SYNC_ENABLED,
     DEFAULT_MEDIA_STORAGE_PATH,
     DEFAULT_THUMBNAIL_SYNC_ENABLED,
@@ -121,6 +123,7 @@ class TuyaRecordingsClient:
         )
     def update_options(self, entry_data: dict[str, Any]) -> None:
         self.lookback_days = int(entry_data.get(CONF_LOOKBACK_DAYS, DEFAULT_LOOKBACK_DAYS) or 0)
+        self.cloud_activity_paused = bool(entry_data.get(CONF_CLOUD_ACTIVITY_PAUSED, DEFAULT_CLOUD_ACTIVITY_PAUSED))
         self.media_sync_enabled = bool(entry_data.get(CONF_MEDIA_SYNC_ENABLED, DEFAULT_MEDIA_SYNC_ENABLED))
         self.thumbnail_sync_enabled = bool(entry_data.get(CONF_THUMBNAIL_SYNC_ENABLED, DEFAULT_THUMBNAIL_SYNC_ENABLED))
         self.media_sync_hours = int(entry_data.get(CONF_MEDIA_SYNC_HOURS, 0) or 0)
@@ -129,6 +132,8 @@ class TuyaRecordingsClient:
         self.media_storage_path = self._media_storage_path_override or Path(str(configured_media_path))
 
     def camera_index(self, force_refresh: bool = False) -> dict[str, Any]:
+        if self.cloud_activity_paused:
+            return self._paused_index()
         if not self._refresh_lock.acquire(blocking=False):
             return self._busy_cache()
         try:
@@ -232,6 +237,12 @@ class TuyaRecordingsClient:
             "cameras": [],
         }
 
+    def _paused_index(self) -> dict[str, Any]:
+        cached = self.cached_camera_index()
+        cached["cloudPaused"] = True
+        cached["warning"] = "Tuya Recordings cloud activity is paused; using cached recordings only."
+        return cached
+
     def clear_cache(self) -> None:
         if not self._refresh_lock.acquire(blocking=False):
             LOGGER.info("Skipping Tuya recordings cache clear because a refresh is running")
@@ -291,6 +302,7 @@ class TuyaRecordingsClient:
             "has_client_id": bool(self.client_id),
             "has_client_secret": bool(self.client_secret),
             "lookback_days": self.lookback_days,
+            "cloud_activity_paused": self.cloud_activity_paused,
             "recording_scan_max_days": RECORDING_SCAN_MAX_DAYS,
             "recording_scan_empty_day_stop": RECORDING_SCAN_EMPTY_DAY_STOP,
             "media_sync_enabled": self.media_sync_enabled,
@@ -329,12 +341,14 @@ class TuyaRecordingsClient:
 
     def _ipc_bootstrap(self, dev_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
         """Fetch the Tuya IPC signaling credentials used by the camera stack."""
+        self._raise_if_cloud_paused()
         api = self._require_api()
         config = api.get_webrtc_config(dev_id)
         mqtt_auth = api.get_open_iot_hub_config()
         return config, mqtt_auth
 
     def sd_recordings(self, dev_id: str) -> tuple[list[dict[str, Any]], list[str]]:
+        self._raise_if_cloud_paused()
         today = date.today()
         all_clips: list[dict[str, Any]] = []
         days_checked: list[str] = []
@@ -358,6 +372,8 @@ class TuyaRecordingsClient:
 
     def refresh_recent_recordings(self) -> dict[str, Any]:
         """Refresh the cached index by scanning only the newest recording days."""
+        if self.cloud_activity_paused:
+            return self._paused_index()
         if not self._camera_index_cache:
             return self.camera_index(True)
         if not self._refresh_lock.acquire(blocking=False):
@@ -458,6 +474,7 @@ class TuyaRecordingsClient:
                 LOGGER.debug("Could not create cached Tuya recording thumbnail for %s %s-%s: %s", dev_id, start, end, exc)
             LOGGER.info("Using cached Tuya recording for %s %s-%s at %s", dev_id, start, end, output_path)
             return output_path
+        self._raise_if_cloud_paused()
         if output_path.exists():
             LOGGER.warning("Removing invalid cached Tuya recording for %s %s-%s at %s", dev_id, start, end, output_path)
             output_path.unlink(missing_ok=True)
@@ -605,6 +622,10 @@ class TuyaRecordingsClient:
             self._cleanup_failed_remux(h264_path, temp_output_path, output_path, remux_proc)
 
     def sync_recordings(self) -> dict[str, Any]:
+        if self.cloud_activity_paused:
+            result = {"enabled": False, "paused": True, "downloaded": 0, "skipped": 0, "failed": 0, "deleted_videos": 0, "deleted_thumbnails": 0}
+            self._set_media_sync_status("paused", last_result=result)
+            return result
         if not self.media_sync_enabled:
             result = {"enabled": False, "downloaded": 0, "skipped": 0, "failed": 0, "deleted_videos": 0, "deleted_thumbnails": 0}
             self._set_media_sync_status("disabled", last_result=result)
@@ -700,6 +721,9 @@ class TuyaRecordingsClient:
         def sync_camera(dev_id: str, camera_clips: list[dict[str, Any]]) -> None:
             attempted = 0
             for clip in camera_clips:
+                if self.cloud_activity_paused:
+                    mark_skipped()
+                    continue
                 start = int(clip.get("start") or 0)
                 end = int(clip.get("end") or 0)
                 if not start or not end or (cutoff is not None and end < cutoff):
@@ -840,6 +864,8 @@ class TuyaRecordingsClient:
         self._media_sync_status.update(state, **updates)
 
     def populate_thumbnails(self, limit: int = 3) -> dict[str, Any]:
+        if self.cloud_activity_paused:
+            return {"created": 0, "created_from_cache": 0, "skipped": 0, "failed": 0, "checked": 0, "limit": limit, "paused": True}
         index = self.cached_camera_index()
         created = 0
         created_from_cache = 0
@@ -905,6 +931,8 @@ class TuyaRecordingsClient:
         clips: list[dict[str, Any]],
         limit: int = THUMBNAIL_AUTOFILL_LIMIT,
     ) -> dict[str, Any]:
+        if self.cloud_activity_paused:
+            return {"created": 0, "created_from_cache": 0, "skipped": 0, "failed": 0, "checked": 0, "limit": limit, "paused": True}
         now = time.time()
         if now < self._thumbnail_autofill_after:
             return {"created": 0, "skipped": 0, "failed": 0, "checked": 0, "throttled": True}
@@ -957,6 +985,7 @@ class TuyaRecordingsClient:
         thumbnail_path = self.thumbnail_path(dev_id, start, end)
         if thumbnail_path.exists() and thumbnail_path.stat().st_size > 0:
             return thumbnail_path
+        self._raise_if_cloud_paused()
         sample_end = min(int(end), int(start) + THUMBNAIL_SAMPLE_SECONDS)
         if sample_end <= int(start):
             return None
@@ -1124,8 +1153,13 @@ class TuyaRecordingsClient:
         return stale
 
     def _camera_devices(self) -> list[dict[str, Any]]:
+        self._raise_if_cloud_paused()
         devices = self._require_api().get_devices()
         return [dict(device, devId=device.get("id")) for device in devices if isinstance(device, dict)]
+
+    def _raise_if_cloud_paused(self) -> None:
+        if self.cloud_activity_paused:
+            raise RuntimeError("Tuya Recordings cloud activity is paused")
 
     def _require_api(self) -> TuyaOpenApiClient:
         if self._api is None:

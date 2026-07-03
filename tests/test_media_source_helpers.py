@@ -6,6 +6,7 @@ import pytest
 
 class StubClient:
     media_sync_enabled = False
+    cloud_activity_paused = False
 
     def thumbnail_path(self, dev_id, start, end):
         return DummyPath()
@@ -158,6 +159,17 @@ def test_resolve_clip_playback_url_downloads_uncached_when_lazy(monkeypatch):
     assert client.downloaded == [("cam", 10, 20, client.path)]
 
 
+def test_resolve_clip_playback_url_rejects_uncached_when_cloud_paused(monkeypatch):
+    source = TuyaRecordingsMediaSource(hass=None)
+    client = DownloadingClipClient()
+    client.cloud_activity_paused = True
+    monkeypatch.setattr(source, "_local_media_url", lambda path: f"/media/local/{DOMAIN}/videos/{path.name}" if path.exists() else None)
+
+    with pytest.raises(RuntimeError, match="paused"):
+        source._resolve_clip_playback_url(client, "cam", 10, 20)
+    assert client.downloaded == []
+
+
 def test_resolve_clip_playback_url_rejects_uncached_when_precache_enabled(monkeypatch):
     source = TuyaRecordingsMediaSource(hass=None)
     client = DownloadingClipClient()
@@ -188,6 +200,14 @@ def test_visible_clips_precache_mode_requires_cached_video_and_thumbnail():
 
 def test_thumbnail_url_uses_private_integration_endpoint():
     assert TuyaRecordingsMediaSource._thumbnail_url_for_clip("cam 1", 10, 20) == f"/api/{DOMAIN}/thumb/cam%201/10/20"
+
+
+def test_thumbnail_url_ignores_live_thumbnail_when_cloud_paused():
+    source = TuyaRecordingsMediaSource(hass=None)
+    client = StubClient()
+    client.cloud_activity_paused = True
+
+    assert source._thumbnail_url(client, {"thumbnail": "https://example.com/thumb.jpg"}, "cam", 10, 20) is None
 
 
 def test_language_time_format_uses_12_hour_for_plain_english():

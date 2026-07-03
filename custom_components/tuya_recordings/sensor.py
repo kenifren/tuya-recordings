@@ -51,7 +51,7 @@ class TuyaRecordingsClipCountSensor(SensorEntity):
 
     def _handle_recordings_updated(self, entry_id: str) -> None:
         if entry_id == self.entry.entry_id:
-            self.async_write_ha_state()
+            self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
 
     @property
     def native_value(self) -> int:
@@ -76,6 +76,7 @@ class TuyaRecordingsClipCountSensor(SensorEntity):
             "stale": index.get("stale", False),
             "cache_expires_at": diagnostics.get("cache_expires_at"),
             "refresh_running": diagnostics.get("refresh_running"),
+            "cloud_activity_paused": diagnostics.get("cloud_activity_paused"),
             "thumbnail_sync_running": entry_data.get("thumbnail_sync_running", False),
             "media_sync_running": entry_data.get("media_sync_running", False),
             "media_sync_state": media_sync_status.get("state"),

@@ -8,6 +8,7 @@ class FakeClient:
         self.tmp_path = tmp_path / "tuya_recordings"
         self.media_sync_enabled = True
         self.thumbnail_sync_enabled = False
+        self.cloud_activity_paused = False
 
     def clip_path(self, dev_id, start, end):
         return self.tmp_path / "videos" / f"{dev_id}_{start}_{end}.mp4"
@@ -243,3 +244,12 @@ def test_build_panel_data_thumbnail_sync_shows_thumbnailed_uncached_files(tmp_pa
     assert camera["clips"][0]["playback_url"] == "/api/tuya_recordings/play/camera%201/100/130"
     assert data["stats"]["thumbnail_cache_only"] is True
     assert data["stats"]["visible_clips"] == 1
+
+
+def test_build_panel_data_reports_cloud_pause_state(tmp_path):
+    client = FakeClient(tmp_path)
+    client.cloud_activity_paused = True
+
+    data = build_panel_data(client, {"generatedAt": "now", "cameras": []}, media_root=tmp_path)
+
+    assert data["stats"]["cloud_activity_paused"] is True

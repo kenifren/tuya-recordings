@@ -115,7 +115,8 @@ class TuyaRecordingsMediaSource(MediaSource):
                 )
                 for clip in clips
             ]
-            self._schedule_thumbnail_autofill(client, dev_id, clips)
+            if not getattr(client, "cloud_activity_paused", False):
+                self._schedule_thumbnail_autofill(client, dev_id, clips)
             return self._directory_node(identifier=identifier, title=clip_date, children=children)
 
         if dev_id and start and end:
@@ -276,6 +277,8 @@ class TuyaRecordingsMediaSource(MediaSource):
         clip_path = client.clip_path(dev_id, start, end)
         clip_cached = client.clip_cached(dev_id, start, end) if hasattr(client, "clip_cached") else self._path_ready(clip_path)
         if not clip_cached:
+            if getattr(client, "cloud_activity_paused", False):
+                raise RuntimeError("Tuya Recordings cloud activity is paused")
             if self._requires_ready_cache(client):
                 raise RuntimeError("clip is not cached")
             client.download_clip(dev_id, start, end, clip_path)
@@ -330,15 +333,17 @@ class TuyaRecordingsMediaSource(MediaSource):
         return f"/api/{DOMAIN}/thumb/{quote(dev_id)}/{start}/{end}"
 
     def _thumbnail_url(self, client: Any, clip: dict[str, Any], dev_id: str, start: int, end: int) -> str | None:
+        thumbnail_path = client.thumbnail_path(dev_id, start, end)
+        if thumbnail_path.exists() and thumbnail_path.stat().st_size > 0:
+            return self._thumbnail_url_for_clip(dev_id, start, end)
+        if getattr(client, "cloud_activity_paused", False):
+            return None
+
         live_thumbnail = str(clip.get("thumbnail") or "").strip()
         if not live_thumbnail and isinstance(raw := clip.get("raw"), dict):
             live_thumbnail = self._raw_thumbnail_url(raw)
         if live_thumbnail:
             return self._absolute_url(client, live_thumbnail)
-
-        thumbnail_path = client.thumbnail_path(dev_id, start, end)
-        if thumbnail_path.exists() and thumbnail_path.stat().st_size > 0:
-            return self._thumbnail_url_for_clip(dev_id, start, end)
         return None
 
     @staticmethod

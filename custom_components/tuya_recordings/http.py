@@ -133,6 +133,7 @@ def _empty_stats(client: TuyaRecordingsClient) -> dict[str, Any]:
         "camera_stats": [],
         "cache_only": bool(getattr(client, "media_sync_enabled", False)),
         "thumbnail_cache_only": bool(getattr(client, "thumbnail_sync_enabled", False)),
+        "cloud_activity_paused": bool(getattr(client, "cloud_activity_paused", False)),
     }
 
 
@@ -260,13 +261,16 @@ class TuyaRecordingsPlaybackView(http.HomeAssistantView):
         output_path = client.clip_path(dev_id, start_int, end_int)
         clip_cached = client.clip_cached(dev_id, start_int, end_int) if hasattr(client, "clip_cached") else _path_ready(output_path)
         if not clip_cached:
+            if getattr(client, "cloud_activity_paused", False):
+                raise web.HTTPServiceUnavailable(reason="Tuya Recordings cloud activity is paused")
             if getattr(client, "media_sync_enabled", False):
                 raise web.HTTPNotFound(reason="Tuya recording is not cached")
             await self.hass.async_add_executor_job(client.download_clip, dev_id, start_int, end_int, output_path)
             clip_cached = client.clip_cached(dev_id, start_int, end_int) if hasattr(client, "clip_cached") else _path_ready(output_path)
             if not clip_cached:
                 raise web.HTTPNotFound(reason="Tuya recording could not be cached")
-        self._schedule_thumbnail(client, dev_id, start_int, end_int)
+        if not getattr(client, "cloud_activity_paused", False):
+            self._schedule_thumbnail(client, dev_id, start_int, end_int)
         return web.FileResponse(output_path)
 
     def _client(self) -> TuyaRecordingsClient:
@@ -300,6 +304,8 @@ class TuyaRecordingsThumbnailView(http.HomeAssistantView):
         client = self._client()
         thumbnail_path = client.thumbnail_path(dev_id, start_int, end_int)
         if not thumbnail_path.exists() or thumbnail_path.stat().st_size <= 0:
+            if getattr(client, "cloud_activity_paused", False):
+                raise web.HTTPNotFound(reason="Tuya recording thumbnail is not cached yet")
             await self.hass.async_add_executor_job(client.ensure_thumbnail, dev_id, start_int, end_int)
         if not thumbnail_path.exists() or thumbnail_path.stat().st_size <= 0:
             raise web.HTTPNotFound(reason="Tuya recording thumbnail is not cached yet")

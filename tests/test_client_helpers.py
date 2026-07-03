@@ -346,6 +346,35 @@ def test_camera_index_returns_busy_cache_when_refresh_lock_is_held():
     assert "already running" in index["warning"]
 
 
+def test_camera_index_uses_cached_data_when_cloud_activity_is_paused(monkeypatch):
+    client = TuyaRecordingsClient({"cloud_activity_paused": True})
+    client._camera_index_cache = {"generatedAt": "old", "cameras": [{"name": "Camera", "clips": [{}]}]}
+    monkeypatch.setattr(client, "_camera_devices", lambda: (_ for _ in ()).throw(AssertionError("should not call Tuya API")))
+
+    index = client.camera_index(force_refresh=True)
+
+    assert index["cloudPaused"] is True
+    assert "paused" in index["warning"]
+    assert index["cameras"] == [{"name": "Camera", "clips": [{}]}]
+
+
+def test_sync_and_thumbnail_jobs_do_not_touch_cloud_when_paused(monkeypatch, tmp_path):
+    client = TuyaRecordingsClient(
+        {"cloud_activity_paused": True, "media_sync_enabled": True, "thumbnail_sync_enabled": True},
+        media_storage_path=tmp_path,
+    )
+    monkeypatch.setattr(client, "refresh_recent_recordings", lambda: (_ for _ in ()).throw(AssertionError("should not refresh")))
+    monkeypatch.setattr(client, "create_thumbnail_sample", lambda *args: (_ for _ in ()).throw(AssertionError("should not sample")))
+
+    sync_result = client.sync_recordings()
+    thumbnail_result = client.populate_thumbnails(limit=5)
+
+    assert sync_result["paused"] is True
+    assert client.diagnostics()["media_sync_status"]["state"] == "paused"
+    assert thumbnail_result["paused"] is True
+    assert thumbnail_result["checked"] == 0
+
+
 def test_clear_cache_skips_when_refresh_lock_is_held(tmp_path):
     cache_path = tmp_path / "cache.json"
     cache_path.write_text("{}", encoding="utf-8")

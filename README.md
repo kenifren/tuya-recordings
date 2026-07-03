@@ -204,6 +204,22 @@ Recordings are downloaded in the background. The custom panel and Media Browser
 show only clips that are cached and thumbnailed, so playback should start
 quickly.
 
+### Pause Cloud Activity
+
+Tuya Recordings adds a **Pause Tuya camera cloud activity** switch.
+
+Turn it on when cameras are unstable or recovering. While enabled, Tuya
+Recordings keeps serving already-cached media and thumbnails, but stops work
+that can touch Tuya camera, video, or recording resources:
+
+- manual recording refreshes
+- scheduled recording polling
+- media/video sync
+- thumbnail sync and thumbnail sampling
+- Home Assistant camera-triggered background sync
+- uncached on-demand clip downloads
+- missing thumbnail or live thumbnail URL refresh paths
+
 ### Storage Changes
 
 Default storage path:

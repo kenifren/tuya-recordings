@@ -45,6 +45,9 @@ class TuyaRecordingsRefreshButton(ButtonEntity):
         entry_data = self.hass.data.get(DOMAIN, {}).get(self.entry.entry_id)
         if not isinstance(entry_data, dict) or not entry_data.get("client"):
             return
+        if getattr(entry_data["client"], "cloud_activity_paused", False):
+            LOGGER.info("Skipping Tuya Recordings manual refresh because cloud activity is paused")
+            return
 
         try:
             await self.hass.async_add_executor_job(entry_data["client"].camera_index, True)

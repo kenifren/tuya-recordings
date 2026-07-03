@@ -1,5 +1,25 @@
 # Changelog
 
+## Tuya Recordings v0.3.0-beta.3
+
+Safety update for unstable Tuya cameras.
+
+### Highlights
+
+- Adds a **Pause Tuya camera cloud activity** switch.
+- When paused, Tuya Recordings serves cached media only and stops manual
+  refreshes, scheduled polling, media sync, thumbnail sync, HA camera-triggered
+  sync dispatches, uncached clip downloads, and missing-thumbnail refresh paths.
+- Adds pause status to diagnostics, the cached clip sensor attributes, and the
+  panel stats.
+- Fixes a Home Assistant 2026 thread-safety issue where the cached clip sensor
+  could call `async_write_ha_state` from a worker thread.
+
+### Validation
+
+- Full validation passed through `tools/validate.ps1`.
+- Test suite passed: 112 tests.
+
 ## Tuya Recordings v0.3.0-beta.2
 
 Backup-focused beta update for installs that mainly want SD-card visibility

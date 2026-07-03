@@ -17,6 +17,7 @@ from homeassistant.helpers import entity_registry as er
 
 from .client import TuyaRecordingsAuthError, TuyaRecordingsClient
 from .const import (
+    CONF_CLOUD_ACTIVITY_PAUSED,
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
     DOMAIN,
@@ -216,7 +217,22 @@ async def _async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None
         return
     client: TuyaRecordingsClient = entry_data["client"]
     await hass.async_add_executor_job(client.update_options, {**entry.data, **entry.options})
+    if client.cloud_activity_paused:
+        await async_pause_camera_work(hass, entry.entry_id)
     async_dispatcher_send(hass, SIGNAL_RECORDINGS_UPDATED, entry.entry_id)
+
+
+async def async_pause_camera_work(hass: HomeAssistant, entry_id: str) -> None:
+    """Clear queued Tuya camera work for an entry while cloud activity is paused."""
+    entry_data = hass.data.get(DOMAIN, {}).get(entry_id)
+    if not isinstance(entry_data, dict):
+        return
+    entry_data[DATA_MEDIA_SYNC_PENDING] = False
+    entry_data[DATA_THUMBNAIL_SYNC_PENDING] = False
+    entry_data.pop(DATA_THUMBNAIL_SYNC_LIMIT, None)
+    entry_data.pop(DATA_THUMBNAIL_SYNC_REQUIRE_MEDIA, None)
+    if timer := entry_data.pop(DATA_RECORDING_TRIGGER_TIMER, None):
+        timer()
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -242,6 +258,9 @@ def _async_register_services(hass: HomeAssistant) -> None:
     async def refresh_recordings(call) -> None:
         entries = _entries_for_call(hass, call.data.get(CONF_ENTRY_ID))
         for entry_data in entries:
+            if _entry_cloud_paused(entry_data):
+                _LOGGER.info("Skipping Tuya Recordings refresh because cloud activity is paused")
+                continue
             try:
                 await hass.async_add_executor_job(entry_data["client"].camera_index, True)
             except TuyaRecordingsAuthError as exc:
@@ -270,12 +289,18 @@ def _async_register_services(hass: HomeAssistant) -> None:
     async def sync_media(call) -> None:
         entries = _entries_for_call(hass, call.data.get(CONF_ENTRY_ID))
         for entry_data in entries:
+            if _entry_cloud_paused(entry_data):
+                _LOGGER.info("Skipping Tuya Recordings media sync because cloud activity is paused")
+                continue
             await _async_request_camera_work(hass, entry_data["entry"].entry_id, "service", media=True, thumbnails=True, wait=True)
 
     async def populate_thumbnails(call) -> None:
         entries = _entries_for_call(hass, call.data.get(CONF_ENTRY_ID))
         limit = int(call.data.get(CONF_LIMIT) or THUMBNAIL_SYNC_LIMIT)
         for entry_data in entries:
+            if _entry_cloud_paused(entry_data):
+                _LOGGER.info("Skipping Tuya Recordings thumbnail sync because cloud activity is paused")
+                continue
             await _async_request_camera_work(
                 hass,
                 entry_data["entry"].entry_id,
@@ -311,6 +336,8 @@ def _async_register_views(hass: HomeAssistant) -> None:
 
 def _async_schedule_media_sync(hass: HomeAssistant, entry: ConfigEntry) -> None:
     async def _run_thumbnail_interval(now) -> None:
+        if _entry_cloud_paused(_entry_data(hass, entry.entry_id)):
+            return
         await _async_request_camera_work(
             hass,
             entry.entry_id,
@@ -321,9 +348,13 @@ def _async_schedule_media_sync(hass: HomeAssistant, entry: ConfigEntry) -> None:
         )
 
     async def _run_media_interval(now) -> None:
+        if _entry_cloud_paused(_entry_data(hass, entry.entry_id)):
+            return
         await _async_request_camera_work(hass, entry.entry_id, "interval", media=True)
 
     async def _run_thumbnail_startup(now) -> None:
+        if _entry_cloud_paused(_entry_data(hass, entry.entry_id)):
+            return
         await _async_request_camera_work(
             hass,
             entry.entry_id,
@@ -334,16 +365,18 @@ def _async_schedule_media_sync(hass: HomeAssistant, entry: ConfigEntry) -> None:
         )
 
     async def _run_media_startup(now) -> None:
+        if _entry_cloud_paused(_entry_data(hass, entry.entry_id)):
+            return
         await _async_request_camera_work(hass, entry.entry_id, "startup", media=True)
 
     entry.async_on_unload(async_track_time_interval(hass, _run_thumbnail_interval, THUMBNAIL_SYNC_INTERVAL))
     entry.async_on_unload(async_track_time_interval(hass, _run_media_interval, MEDIA_SYNC_INTERVAL))
     entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id)
     if isinstance(entry_data, dict) and entry_data.get("client") and (
-        entry_data["client"].media_sync_enabled or entry_data["client"].thumbnail_sync_enabled
+        not entry_data["client"].cloud_activity_paused and (entry_data["client"].media_sync_enabled or entry_data["client"].thumbnail_sync_enabled)
     ):
         entry.async_on_unload(async_call_later(hass, THUMBNAIL_SYNC_STARTUP_DELAY, _run_thumbnail_startup))
-    if isinstance(entry_data, dict) and entry_data.get("client") and entry_data["client"].media_sync_enabled:
+    if isinstance(entry_data, dict) and entry_data.get("client") and not entry_data["client"].cloud_activity_paused and entry_data["client"].media_sync_enabled:
         entry.async_on_unload(async_call_later(hass, MEDIA_SYNC_STARTUP_DELAY, _run_media_startup))
 
 
@@ -368,6 +401,8 @@ def _async_setup_recording_triggers(hass: HomeAssistant, entry: ConfigEntry) -> 
         if not isinstance(entry_data, dict) or not isinstance(entry_data.get("client"), TuyaRecordingsClient):
             return
         client: TuyaRecordingsClient = entry_data["client"]
+        if client.cloud_activity_paused:
+            return
         if not client.media_sync_enabled and not client.thumbnail_sync_enabled:
             return
 
@@ -516,6 +551,10 @@ async def _async_request_camera_work(
     if not isinstance(entry_data, dict) or not isinstance(entry_data.get("client"), TuyaRecordingsClient):
         return
     client: TuyaRecordingsClient = entry_data["client"]
+    if client.cloud_activity_paused:
+        entry_data[DATA_MEDIA_SYNC_PENDING] = False
+        entry_data[DATA_THUMBNAIL_SYNC_PENDING] = False
+        return
     queued = False
     if media and client.media_sync_enabled:
         if not entry_data.get(DATA_MEDIA_SYNC_RUNNING):
@@ -547,8 +586,11 @@ async def _async_run_camera_work(hass: HomeAssistant, entry_id: str, reason: str
         return
     client: TuyaRecordingsClient = entry_data["client"]
     while True:
+        if client.cloud_activity_paused:
+            await async_pause_camera_work(hass, entry_id)
+            return
         if entry_data.pop(DATA_MEDIA_SYNC_PENDING, False):
-            if client.media_sync_enabled:
+            if client.media_sync_enabled and not client.cloud_activity_paused:
                 entry_data[DATA_MEDIA_SYNC_RUNNING] = True
                 try:
                     result = await hass.async_add_executor_job(client.sync_recordings)
@@ -564,6 +606,8 @@ async def _async_run_camera_work(hass: HomeAssistant, entry_id: str, reason: str
         if entry_data.pop(DATA_THUMBNAIL_SYNC_PENDING, False):
             limit = int(entry_data.pop(DATA_THUMBNAIL_SYNC_LIMIT, THUMBNAIL_SYNC_LIMIT) or THUMBNAIL_SYNC_LIMIT)
             require_media_sync = bool(entry_data.pop(DATA_THUMBNAIL_SYNC_REQUIRE_MEDIA, True))
+            if client.cloud_activity_paused:
+                continue
             if require_media_sync and not client.media_sync_enabled:
                 continue
             if not require_media_sync and not client.media_sync_enabled and not client.thumbnail_sync_enabled:
@@ -596,3 +640,15 @@ def _entries_for_call(hass: HomeAssistant, entry_id: str | None) -> list[dict]:
 
 def _configured_entries(hass: HomeAssistant) -> list[dict]:
     return _entries_for_call(hass, None)
+
+
+def _entry_data(hass: HomeAssistant, entry_id: str) -> dict | None:
+    entry_data = hass.data.get(DOMAIN, {}).get(entry_id)
+    return entry_data if isinstance(entry_data, dict) else None
+
+
+def _entry_cloud_paused(entry_data: dict | None) -> bool:
+    if not isinstance(entry_data, dict):
+        return False
+    client = entry_data.get("client")
+    return isinstance(client, TuyaRecordingsClient) and bool(client.cloud_activity_paused)
