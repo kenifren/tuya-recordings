@@ -311,7 +311,7 @@ class TuyaRecordingsMediaSource(MediaSource):
 
     @staticmethod
     def _requires_ready_cache(client: Any) -> bool:
-        return bool(getattr(client, "media_sync_enabled", False))
+        return bool(getattr(client, "media_sync_enabled", False) or getattr(client, "cloud_activity_paused", False))
 
     @staticmethod
     def _requires_thumbnail_cache(client: Any) -> bool:

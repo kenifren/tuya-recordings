@@ -253,3 +253,29 @@ def test_build_panel_data_reports_cloud_pause_state(tmp_path):
     data = build_panel_data(client, {"generatedAt": "now", "cameras": []}, media_root=tmp_path)
 
     assert data["stats"]["cloud_activity_paused"] is True
+
+
+def test_build_panel_data_cloud_pause_hides_uncached_files(tmp_path):
+    client = FakeClient(tmp_path)
+    client.media_sync_enabled = False
+    client.cloud_activity_paused = True
+
+    data = build_panel_data(
+        client,
+        {
+            "generatedAt": "now",
+            "cameras": [
+                {
+                    "devId": "camera 1",
+                    "name": "Front",
+                    "online": True,
+                    "clips": [{"start": 100, "end": 130, "date": "2026-06-28"}],
+                }
+            ],
+        },
+        media_root=tmp_path,
+    )
+
+    assert data["cameras"][0]["clips"] == []
+    assert data["stats"]["visible_clips"] == 0
+    assert data["stats"]["cloud_activity_paused"] is True

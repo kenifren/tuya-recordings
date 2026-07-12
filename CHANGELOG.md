@@ -1,5 +1,26 @@
 # Changelog
 
+## Tuya Recordings v0.3.0-beta.4
+
+Compatibility and safety cleanup after the first public install reports.
+
+### Highlights
+
+- Fixes a Home Assistant config-flow crash on 2026.7.x caused by a non-serializable
+  custom validator in the media storage path field.
+- Keeps media storage path validation, but now reports normal field errors
+  instead of breaking the config flow form.
+- Tightens **Pause Tuya camera cloud activity** so the panel and Media Browser
+  hide uncached clips while paused instead of presenting items that would fail
+  when selected.
+- Adds regression tests for Home Assistant frontend schema serialization and
+  paused cached-only browsing behavior.
+
+### Validation
+
+- Full validation passed through `tools/validate.ps1`.
+- Test suite passed: 119 tests.
+
 ## Tuya Recordings v0.3.0-beta.3
 
 Safety update for unstable Tuya cameras.

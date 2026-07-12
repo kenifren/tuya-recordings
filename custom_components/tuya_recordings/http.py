@@ -18,7 +18,8 @@ def build_panel_data(client: TuyaRecordingsClient, index: dict[str, Any], media_
     """Build cache-backed panel data from the recording index."""
     cameras: list[dict[str, Any]] = []
     stats: dict[str, Any] = _empty_stats(client)
-    media_cache_only = bool(getattr(client, "media_sync_enabled", False))
+    cloud_activity_paused = bool(getattr(client, "cloud_activity_paused", False))
+    media_cache_only = bool(getattr(client, "media_sync_enabled", False)) or cloud_activity_paused
     thumbnail_cache_only = bool(getattr(client, "thumbnail_sync_enabled", False))
     for camera in index.get("cameras", []):
         dev_id = str(camera.get("devId") or "")

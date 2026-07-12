@@ -36,13 +36,16 @@ class TuyaRecordingsConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 2
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        errors = _required_dependency_errors(self.hass)
+        dependency_errors = _required_dependency_errors(self.hass)
         if user_input is not None:
+            errors = _validate_form_input(user_input)
+            if dependency_errors:
+                errors["base"] = _dependency_error_key(dependency_errors)
             if errors:
                 return self.async_show_form(
                     step_id="user",
                     data_schema=_user_schema(user_input),
-                    errors={"base": _dependency_error_key(errors)},
+                    errors=errors,
                 )
 
             entry_data = {
@@ -63,7 +66,7 @@ class TuyaRecordingsConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="user",
             data_schema=_user_schema(user_input),
-            errors={"base": _dependency_error_key(errors)} if errors else {},
+            errors={"base": _dependency_error_key(dependency_errors)} if dependency_errors else {},
         )
 
     @staticmethod
@@ -78,6 +81,9 @@ class TuyaRecordingsOptionsFlow(OptionsFlow):
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         if user_input is not None:
+            errors = _validate_form_input(user_input)
+            if errors:
+                return self.async_show_form(step_id="init", data_schema=_options_schema(self.config_entry, user_input), errors=errors)
             old_path = _current_media_storage_path(self.config_entry)
             new_path = user_input[CONF_MEDIA_STORAGE_PATH]
             if new_path != old_path:
@@ -85,45 +91,9 @@ class TuyaRecordingsOptionsFlow(OptionsFlow):
                 return await self.async_step_storage_path_changed()
             return self.async_create_entry(title="", data=user_input)
 
-        options = dict(self.config_entry.options)
-        data = dict(self.config_entry.data)
-        lookback_days = options.get(CONF_LOOKBACK_DAYS, data.get(CONF_LOOKBACK_DAYS, DEFAULT_LOOKBACK_DAYS))
-        media_sync_enabled = options.get(CONF_MEDIA_SYNC_ENABLED, DEFAULT_MEDIA_SYNC_ENABLED)
-        media_sync_hours = options.get(CONF_MEDIA_SYNC_HOURS, DEFAULT_MEDIA_SYNC_HOURS)
-        media_storage_path = options.get(CONF_MEDIA_STORAGE_PATH, data.get(CONF_MEDIA_STORAGE_PATH, DEFAULT_MEDIA_STORAGE_PATH))
-        recordings_order = options.get(CONF_MEDIA_VIEW_RECORDINGS_ORDER, "Descending")
-        thumbnail_sync_enabled = options.get(CONF_THUMBNAIL_SYNC_ENABLED, data.get(CONF_THUMBNAIL_SYNC_ENABLED, DEFAULT_THUMBNAIL_SYNC_ENABLED))
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_LOOKBACK_DAYS, default=lookback_days): selector.NumberSelector(
-                        selector.NumberSelectorConfig(
-                            min=0,
-                            max=31,
-                            step=1,
-                            mode=selector.NumberSelectorMode.BOX,
-                        )
-                    ),
-                    vol.Required(CONF_MEDIA_VIEW_RECORDINGS_ORDER, default=recordings_order): selector.SelectSelector(
-                        selector.SelectSelectorConfig(options=MEDIA_VIEW_RECORDINGS_ORDER_OPTIONS)
-                    ),
-                    vol.Required(CONF_MEDIA_SYNC_ENABLED, default=media_sync_enabled): selector.BooleanSelector(),
-                    vol.Required(CONF_THUMBNAIL_SYNC_ENABLED, default=thumbnail_sync_enabled): selector.BooleanSelector(),
-                    vol.Required(CONF_MEDIA_SYNC_HOURS, default=media_sync_hours): selector.NumberSelector(
-                        selector.NumberSelectorConfig(
-                            min=0,
-                            max=744,
-                            step=1,
-                            mode=selector.NumberSelectorMode.BOX,
-                        )
-                    ),
-                    vol.Required(CONF_MEDIA_STORAGE_PATH, default=media_storage_path): vol.All(
-                        selector.TextSelector(),
-                        _validate_media_storage_path,
-                    ),
-                }
-            ),
+            data_schema=_options_schema(self.config_entry),
         )
 
     async def async_step_storage_path_changed(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
@@ -151,10 +121,59 @@ def _validate_media_storage_path(value: str) -> str:
     return path
 
 
+def _validate_form_input(user_input: dict[str, Any]) -> dict[str, str]:
+    try:
+        user_input[CONF_MEDIA_STORAGE_PATH] = _validate_media_storage_path(user_input.get(CONF_MEDIA_STORAGE_PATH, ""))
+    except vol.Invalid as exc:
+        return {CONF_MEDIA_STORAGE_PATH: str(exc)}
+    return {}
+
+
 def _current_media_storage_path(config_entry) -> str:
     return config_entry.options.get(
         CONF_MEDIA_STORAGE_PATH,
         config_entry.data.get(CONF_MEDIA_STORAGE_PATH, DEFAULT_MEDIA_STORAGE_PATH),
+    )
+
+
+def _options_schema(config_entry, user_input: dict[str, Any] | None = None) -> vol.Schema:
+    options = dict(config_entry.options)
+    data = dict(config_entry.data)
+    user_input = user_input or {}
+    lookback_days = user_input.get(CONF_LOOKBACK_DAYS, options.get(CONF_LOOKBACK_DAYS, data.get(CONF_LOOKBACK_DAYS, DEFAULT_LOOKBACK_DAYS)))
+    media_sync_enabled = user_input.get(CONF_MEDIA_SYNC_ENABLED, options.get(CONF_MEDIA_SYNC_ENABLED, DEFAULT_MEDIA_SYNC_ENABLED))
+    media_sync_hours = user_input.get(CONF_MEDIA_SYNC_HOURS, options.get(CONF_MEDIA_SYNC_HOURS, DEFAULT_MEDIA_SYNC_HOURS))
+    media_storage_path = user_input.get(CONF_MEDIA_STORAGE_PATH, options.get(CONF_MEDIA_STORAGE_PATH, data.get(CONF_MEDIA_STORAGE_PATH, DEFAULT_MEDIA_STORAGE_PATH)))
+    recordings_order = user_input.get(CONF_MEDIA_VIEW_RECORDINGS_ORDER, options.get(CONF_MEDIA_VIEW_RECORDINGS_ORDER, "Descending"))
+    thumbnail_sync_enabled = user_input.get(
+        CONF_THUMBNAIL_SYNC_ENABLED,
+        options.get(CONF_THUMBNAIL_SYNC_ENABLED, data.get(CONF_THUMBNAIL_SYNC_ENABLED, DEFAULT_THUMBNAIL_SYNC_ENABLED)),
+    )
+    return vol.Schema(
+        {
+            vol.Required(CONF_LOOKBACK_DAYS, default=lookback_days): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0,
+                    max=31,
+                    step=1,
+                    mode=selector.NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Required(CONF_MEDIA_VIEW_RECORDINGS_ORDER, default=recordings_order): selector.SelectSelector(
+                selector.SelectSelectorConfig(options=MEDIA_VIEW_RECORDINGS_ORDER_OPTIONS)
+            ),
+            vol.Required(CONF_MEDIA_SYNC_ENABLED, default=media_sync_enabled): selector.BooleanSelector(),
+            vol.Required(CONF_THUMBNAIL_SYNC_ENABLED, default=thumbnail_sync_enabled): selector.BooleanSelector(),
+            vol.Required(CONF_MEDIA_SYNC_HOURS, default=media_sync_hours): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0,
+                    max=744,
+                    step=1,
+                    mode=selector.NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Required(CONF_MEDIA_STORAGE_PATH, default=media_storage_path): selector.TextSelector(),
+        }
     )
 
 
@@ -173,10 +192,7 @@ def _user_schema(user_input: dict[str, Any]) -> vol.Schema:
             vol.Required(
                 CONF_MEDIA_STORAGE_PATH,
                 default=user_input.get(CONF_MEDIA_STORAGE_PATH, DEFAULT_MEDIA_STORAGE_PATH),
-            ): vol.All(
-                selector.TextSelector(),
-                _validate_media_storage_path,
-            ),
+            ): selector.TextSelector(),
             vol.Required(
                 CONF_MEDIA_VIEW_RECORDINGS_ORDER,
                 default=user_input.get(CONF_MEDIA_VIEW_RECORDINGS_ORDER, "Descending"),

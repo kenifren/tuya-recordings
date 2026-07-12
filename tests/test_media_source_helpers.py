@@ -198,6 +198,15 @@ def test_visible_clips_precache_mode_requires_cached_video_and_thumbnail():
     assert source._visible_clips(client, camera) == []
 
 
+def test_visible_clips_cloud_pause_requires_cached_video_and_thumbnail():
+    source = TuyaRecordingsMediaSource(hass=None)
+    client = DownloadingClipClient()
+    client.cloud_activity_paused = True
+    camera = {"devId": "cam", "clips": [{"start": 10, "end": 20, "date": "2026-06-29"}]}
+
+    assert source._visible_clips(client, camera) == []
+
+
 def test_thumbnail_url_uses_private_integration_endpoint():
     assert TuyaRecordingsMediaSource._thumbnail_url_for_clip("cam 1", 10, 20) == f"/api/{DOMAIN}/thumb/cam%201/10/20"
 
