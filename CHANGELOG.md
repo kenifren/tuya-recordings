@@ -1,5 +1,26 @@
 # Changelog
 
+## Tuya Recordings v0.3.0-beta.6
+
+Discovery and API compatibility hardening after additional report triage.
+
+### Highlights
+
+- Improve camera discovery so entries are identified by camera-like category, camera-like
+  naming hints, previous cache, and full-device fallback so users with newer
+  Tuya camera categories still get results.
+- Normalize camera/device IDs from multiple API response keys (`id`, `deviceId`,
+  `device_id`, and `devId`) across discovery and playback flows.
+- Expand Tuya OpenAPI `get_devices` parsing so wrapped results (`{"result": [...]}`,
+  `{"list": [...]}`, or `{"devices": [...]}`) are supported.
+- Keep the cached clip sensor thread-safe while preserving paused-state panel and
+  media-browser behavior.
+
+### Validation
+
+- Full validation passed through `tools/validate.ps1`.
+- Test suite passed: 119 tests.
+
 ## Tuya Recordings v0.3.0-beta.4
 
 Compatibility and safety cleanup after the first public install reports.
@@ -110,3 +131,4 @@ First public beta of Tuya Recordings for Home Assistant.
 
 - Full validation passed through `tools/validate.ps1`.
 - Test suite passed: 104 tests.
+

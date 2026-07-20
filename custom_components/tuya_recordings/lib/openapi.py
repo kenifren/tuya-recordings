@@ -43,7 +43,13 @@ class TuyaOpenApiClient:
 
     def get_devices(self) -> list[dict[str, Any]]:
         result = self.get(f"/v1.0/users/{self.user_id}/devices")
-        return result if isinstance(result, list) else []
+        if isinstance(result, list):
+            return result
+        if isinstance(result, dict):
+            devices = result.get("list") or result.get("devices") or result.get("result")
+            if isinstance(devices, list):
+                return devices
+        return []
 
     def get_webrtc_config(self, device_id: str) -> dict[str, Any]:
         result = self.get(f"/v1.0/users/{self.user_id}/devices/{device_id}/webrtc-configs")

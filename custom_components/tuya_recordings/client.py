@@ -82,6 +82,9 @@ THUMBNAIL_AUTOFILL_COOLDOWN = 45
 THUMBNAIL_SAMPLE_SECONDS = 2
 THUMBNAIL_SAMPLE_TIMEOUT = 8
 INDEX_SOURCE = "tuya_ipc_recordings"
+KNOWN_CAMERA_CATEGORIES = {"sp", "dghsxj"}
+KNOWN_CAMERA_CATEGORY_HINTS = ("camera", "ipc", "cam", "doorbell")
+CAMERA_NAME_HINTS = ("camera", "doorbell", "lobby", "ipc", "ip camera")
 
 
 class TuyaRecordingsClient:
@@ -161,10 +164,14 @@ class TuyaRecordingsClient:
             if camera.get("devId")
         }
         generated_at = now.isoformat()
-        for device in devices:
-            if device.get("category") not in {"sp", "dghsxj"}:
-                continue
-            dev_id = device.get("devId") or device.get("deviceId") or device.get("id")
+        camera_devices = self._camera_candidates(devices)
+        if not camera_devices:
+            camera_devices = self._camera_candidates_fallback(devices, previous_by_dev_id)
+        if not camera_devices:
+            LOGGER.warning("Tuya Recordings did not find camera-like Tuya devices for category discovery; proceeding with available devices")
+            camera_devices = devices
+        for device in camera_devices:
+            dev_id = self._device_id(device)
             if not dev_id:
                 continue
             clips: list[dict[str, Any]] = []
@@ -400,10 +407,14 @@ class TuyaRecordingsClient:
         recent_days = [today - timedelta(days=offset) for offset in range(RECENT_RECORDING_SCAN_DAYS)]
         generated_at = now.isoformat()
 
-        for device in devices:
-            if device.get("category") not in {"sp", "dghsxj"}:
-                continue
-            dev_id = str(device.get("devId") or device.get("deviceId") or device.get("id") or "")
+        camera_devices = self._camera_candidates(devices)
+        if not camera_devices:
+            camera_devices = self._camera_candidates_fallback(devices, previous_by_dev_id)
+        if not camera_devices:
+            LOGGER.warning("Tuya Recordings did not find camera-like Tuya devices during recent-recording refresh; proceeding with available devices")
+            camera_devices = devices
+        for device in camera_devices:
+            dev_id = self._device_id(device)
             if not dev_id:
                 continue
             previous = previous_by_dev_id.get(dev_id)
@@ -1155,7 +1166,59 @@ class TuyaRecordingsClient:
     def _camera_devices(self) -> list[dict[str, Any]]:
         self._raise_if_cloud_paused()
         devices = self._require_api().get_devices()
-        return [dict(device, devId=device.get("id")) for device in devices if isinstance(device, dict)]
+        return [dict(device, devId=self._device_id(device)) for device in devices if isinstance(device, dict)]
+
+    def _camera_candidates(self, devices: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return self._unique_devices(
+            [device for device in devices if self._is_camera_category_device(device) or self._is_camera_name_device(device)]
+        )
+
+    def _camera_candidates_fallback(self, devices: list[dict[str, Any]], previous_by_dev_id: dict[str, Any]) -> list[dict[str, Any]]:
+        if previous_by_dev_id:
+            candidates = [device for device in devices if self._device_id(device) in previous_by_dev_id]
+            if candidates:
+                return self._unique_devices(candidates)
+        return []
+
+    @staticmethod
+    def _is_camera_category_device(device: dict[str, Any]) -> bool:
+        category = str(device.get("category") or "").strip().lower()
+        if not category:
+            return False
+        if category in KNOWN_CAMERA_CATEGORIES:
+            return True
+        return any(fragment in category for fragment in KNOWN_CAMERA_CATEGORY_HINTS)
+
+    @staticmethod
+    def _is_camera_name_device(device: dict[str, Any]) -> bool:
+        fields = (
+            str(device.get("name") or ""),
+            str(device.get("product_name") or device.get("productName") or device.get("product") or ""),
+            str(device.get("device_name") or ""),
+            str(device.get("product_id") or ""),
+        )
+        text = " ".join(fields).lower()
+        return any(hint in text for hint in CAMERA_NAME_HINTS)
+
+    @staticmethod
+    def _unique_devices(devices: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        seen: set[str] = set()
+        unique_devices = []
+        for device in devices:
+            dev_id = str(device.get("devId") or device.get("deviceId") or device.get("device_id") or device.get("id") or "")
+            if not dev_id or dev_id in seen:
+                continue
+            seen.add(dev_id)
+            unique_devices.append(device)
+        return unique_devices
+
+    @staticmethod
+    def _device_id(device: dict[str, Any]) -> str:
+        for key in ("id", "deviceId", "device_id", "devId"):
+            value = device.get(key)
+            if value:
+                return str(value)
+        return str(device.get("id", ""))
 
     def _raise_if_cloud_paused(self) -> None:
         if self.cloud_activity_paused:

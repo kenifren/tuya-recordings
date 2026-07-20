@@ -79,3 +79,37 @@ def test_open_iot_hub_config_is_cached_until_expiry(monkeypatch):
     assert first["msid"] == "source-id"
     assert second["msid"] == "source-id"
     assert len(calls) == 1
+
+
+def test_get_devices_accepts_list_result(monkeypatch):
+    client = TuyaOpenApiClient(region="us", client_id="id", client_secret="secret", user_id="uid")
+    monkeypatch.setattr(client, "get", lambda path: [{"id": "cam1"}, {"id": "cam2"}])
+
+    devices = client.get_devices()
+
+    assert devices == [{"id": "cam1"}, {"id": "cam2"}]
+
+
+def test_get_devices_normalizes_wrapped_result(monkeypatch):
+    client = TuyaOpenApiClient(region="us", client_id="id", client_secret="secret", user_id="uid")
+    responses = [
+        {"result": [{"id": "cam1", "name": "Camera 1"}]},
+        {"list": [{"id": "cam2", "name": "Camera 2"}]},
+        {"devices": [{"id": "cam3", "name": "Camera 3"}]},
+    ]
+
+    call = {"count": 0}
+
+    def fake_get(path: str):
+        idx = call["count"]
+        if idx >= len(responses):
+            return []
+        call["count"] += 1
+        return responses[idx]
+
+    monkeypatch.setattr(client, "get", fake_get)
+
+    assert client.get_devices() == [{"id": "cam1", "name": "Camera 1"}]
+    assert client.get_devices() == [{"id": "cam2", "name": "Camera 2"}]
+    assert client.get_devices() == [{"id": "cam3", "name": "Camera 3"}]
+    assert client.get_devices() == []
