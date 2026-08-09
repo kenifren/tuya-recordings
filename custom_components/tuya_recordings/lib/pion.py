@@ -51,11 +51,10 @@ def start_pion_helper(
     proc_env.update(
         {
             "TUYA_RECORDINGS_ICE_SERVERS": json.dumps(ice_servers(config)),
-            "TUYA_RECORDINGS_REMOTE_SDP_TYPE": "answer",
+            "TUYA_RECORDINGS_REMOTE_SDP_TYPE": "pranswer",
             "TUYA_RECORDINGS_DUMMY_AUDIO_SENDRECV": "1",
             "TUYA_RECORDINGS_TRICKLE_CANDIDATES": "1",
             "TUYA_RECORDINGS_CHROME_SDP": "1",
-            "TUYA_RECORDINGS_FORCE_STUN_CONTROLLED": "1",
         }
     )
     if h264_output is not None:
