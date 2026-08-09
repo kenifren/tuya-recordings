@@ -39,6 +39,8 @@ func main() {
 	}
 
 	settingEngine := webrtc.SettingEngine{}
+	// Tuya IPC peers may not complete Pion's DTLS HelloVerify exchange.
+	settingEngine.SetDTLSInsecureSkipHelloVerify(true)
 	applyICESettingsFromEnv(&settingEngine)
 	settingEngine.SetICEBindingRequestHandler(func(m *stun.Message, local, remote ice.Candidate, pair *ice.CandidatePair) bool {
 		_ = writeJSON(map[string]any{
