@@ -321,9 +321,15 @@ class _IpcSession:
     def _open(self) -> "_IpcSession":
         assert self.proc.stdout is not None
         assert self.proc.stdin is not None
-        offer = json.loads(self.proc.stdout.readline())
-        if "sdp" not in offer:
-            raise RuntimeError(f"Tuya IPC helper returned invalid offer: {offer}")
+        while True:
+            line = self.proc.stdout.readline()
+            if not line:
+                raise RuntimeError(f"Tuya IPC helper exited before creating an offer: {self.drain_helper_errors()}")
+            event = json.loads(line)
+            if event.get("type") == "offer" and "sdp" in event:
+                offer = event
+                break
+            self.helper_events.put(event)
         threading.Thread(target=read_helper_stdout, args=(self.proc, self.helper_events), daemon=True).start()
         threading.Thread(target=read_helper_stderr, args=(self.proc, self.helper_errors), daemon=True).start()
         offer["candidates"] = browser_relay_candidate_list(offer.get("candidates") or [])
@@ -407,6 +413,7 @@ class _IpcSession:
 
     def wait_for_answer(self) -> str:
         deadline = time.time() + self.query_timeout
+        pending_candidates: list[dict[str, Any]] = []
         while time.time() < deadline:
             self.drain_helper_events()
             try:
@@ -415,11 +422,17 @@ class _IpcSession:
                 continue
             if payload.get("protocol") != 302 or mqtt_session_id(payload) != self.session_id:
                 continue
-            if mqtt_message_type(payload) == "answer":
+            message_type = mqtt_message_type(payload)
+            if message_type == "candidate":
+                pending_candidates.append(payload)
+                continue
+            if message_type == "answer":
                 answer = mqtt_message_body(payload).get("sdp") or mqtt_message_body(payload).get("value")
                 if answer:
+                    for candidate in pending_candidates:
+                        self.inbound.put(candidate)
                     return answer
-            if mqtt_message_type(payload) == "disconnect":
+            if message_type == "disconnect":
                 raise RuntimeError(f"Tuya camera disconnected before answer: {mqtt_message_body(payload)}")
         raise RuntimeError("Tuya camera did not answer recording offer")
 
