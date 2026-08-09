@@ -184,8 +184,15 @@ class TuyaRecordingsClient:
                     clips, days_checked = self.sd_recordings(dev_id)
                 except TuyaRecordingsApiError as exc:
                     error = str(exc)
+                    LOGGER.warning(
+                        "Tuya recording discovery failed for %s: %s",
+                        dev_id,
+                        exc,
+                        exc_info=True,
+                    )
                 except Exception as exc:
                     error = str(exc)
+                    LOGGER.exception("Tuya recording discovery failed for %s", dev_id)
             if error and not clips and (previous := previous_by_dev_id.get(str(dev_id))):
                 clips = list(previous.get("clips") or [])
             elif previous := previous_by_dev_id.get(str(dev_id)):
@@ -435,9 +442,16 @@ class TuyaRecordingsClient:
                 except TuyaRecordingsApiError as exc:
                     error = str(exc)
                     clips = previous_clips
+                    LOGGER.warning(
+                        "Recent Tuya recording discovery failed for %s: %s",
+                        dev_id,
+                        exc,
+                        exc_info=True,
+                    )
                 except Exception as exc:
                     error = str(exc)
                     clips = previous_clips
+                    LOGGER.exception("Recent Tuya recording discovery failed for %s", dev_id)
             cameras.append(
                 {
                     "devId": dev_id,
