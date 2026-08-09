@@ -321,9 +321,15 @@ class _IpcSession:
     def _open(self) -> "_IpcSession":
         assert self.proc.stdout is not None
         assert self.proc.stdin is not None
-        offer = json.loads(self.proc.stdout.readline())
-        if "sdp" not in offer:
-            raise RuntimeError(f"Tuya IPC helper returned invalid offer: {offer}")
+        while True:
+            line = self.proc.stdout.readline()
+            if not line:
+                raise RuntimeError(f"Tuya IPC helper exited before creating an offer: {self.drain_helper_errors()}")
+            event = json.loads(line)
+            if event.get("type") == "offer" and "sdp" in event:
+                offer = event
+                break
+            self.helper_events.put(event)
         threading.Thread(target=read_helper_stdout, args=(self.proc, self.helper_events), daemon=True).start()
         threading.Thread(target=read_helper_stderr, args=(self.proc, self.helper_errors), daemon=True).start()
         offer["candidates"] = browser_relay_candidate_list(offer.get("candidates") or [])
