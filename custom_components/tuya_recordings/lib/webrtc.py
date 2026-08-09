@@ -21,6 +21,7 @@ class WebRTCProbeSummary:
         self.remote_sdp_type = "unknown"
         self.local_setup = "unknown"
         self.remote_setup = "unknown"
+        self.helper_remote_setup = "unknown"
 
     def add_helper_event(self, event: dict[str, Any]) -> None:
         event_type = str(event.get("type") or "")
@@ -46,11 +47,14 @@ class WebRTCProbeSummary:
     def describe(self) -> str:
         helper = ",".join(f"{key}:{value}" for key, value in sorted(self.helper_events.items())) or "none"
         mqtt_seen = ",".join(f"{key}:{value}" for key, value in sorted(self.mqtt_messages.items())) or "none"
+        setup = f"{self.local_setup}->{self.remote_setup}"
+        if self.helper_remote_setup != self.remote_setup:
+            setup += f"(helper:{self.helper_remote_setup})"
         return (
             f"ice={self.ice_state or 'unknown'}, connection={self.connection_state or 'unknown'}, "
             f"tracks={self.tracks}, first_rtp={self.first_rtp}, result_bytes={self.result_bytes}, "
             f"remote_candidates={self.remote_candidates}, added={self.remote_candidates_added}, "
-            f"sdp={self.remote_sdp_type}, setup={self.local_setup}->{self.remote_setup}, "
+            f"sdp={self.remote_sdp_type}, setup={setup}, "
             f"mqtt={mqtt_seen}, helper_events={helper}"
         )
 

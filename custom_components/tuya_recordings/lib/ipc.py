@@ -301,6 +301,7 @@ class _IpcSession:
         self.helper_errors: queue.Queue[str] = queue.Queue()
         self.local_setup = "unknown"
         self.remote_setup = "unknown"
+        self.helper_remote_setup = "unknown"
         self.proc = start_pion_helper(
             pion_helper_path(),
             config,
@@ -372,8 +373,11 @@ class _IpcSession:
 
         answer_sdp = self.wait_for_answer()
         self.remote_setup = sdp_setup_roles(answer_sdp)
+        # Some Tuya firmware advertises the active DTLS role but never sends ClientHello.
+        helper_answer_sdp = answer_sdp.replace("a=setup:active", "a=setup:passive")
+        self.helper_remote_setup = sdp_setup_roles(helper_answer_sdp)
         try:
-            self.proc.stdin.write(json.dumps({"type": "answer", "sdp": answer_sdp}) + "\n")
+            self.proc.stdin.write(json.dumps({"type": "answer", "sdp": helper_answer_sdp}) + "\n")
             self.proc.stdin.flush()
         except BrokenPipeError as err:
             raise RuntimeError(f"Tuya IPC helper exited after answer: {self.drain_helper_errors()}") from err
@@ -447,6 +451,7 @@ class _IpcSession:
         summary.remote_sdp_type = "answer"
         summary.local_setup = self.local_setup
         summary.remote_setup = self.remote_setup
+        summary.helper_remote_setup = self.helper_remote_setup
         self.logger.debug("Waiting for Tuya IPC WebRTC connection for %s session %s", self.dev_id, self.session_id)
         while time.time() < deadline:
             for event in self.drain_helper_events():
