@@ -41,6 +41,11 @@ def start_pion_helper(
 ) -> subprocess.Popen[str]:
     if not helper_path.exists():
         raise RuntimeError(f"Pion WebRTC offer helper is missing: {helper_path}")
+    if not os.access(helper_path, os.X_OK):
+        try:
+            helper_path.chmod(helper_path.stat().st_mode | 0o111)
+        except OSError as exc:
+            raise RuntimeError(f"Pion WebRTC offer helper is not executable: {helper_path}") from exc
 
     proc_env = os.environ.copy()
     proc_env.update(
