@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +24,9 @@ import (
 )
 
 var stdoutMu sync.Mutex
+
+const helperBuild = "2026-08-10-ice-nomination-1"
+const selectPairFromObservedBindingRequest = false
 
 func main() {
 	interactive := flag.Bool("interactive", false, "keep the peer connection alive, read a remote SDP answer from stdin, and report received media")
@@ -42,17 +46,18 @@ func main() {
 	// Tuya IPC peers may not complete Pion's DTLS HelloVerify exchange.
 	settingEngine.SetDTLSInsecureSkipHelloVerify(true)
 	applyICESettingsFromEnv(&settingEngine)
-	settingEngine.SetICEBindingRequestHandler(func(m *stun.Message, local, remote ice.Candidate, pair *ice.CandidatePair) bool {
+	settingEngine.SetICEBindingRequestHandler(func(m *stun.Message, local, remote ice.Candidate, _ *ice.CandidatePair) bool {
 		_ = writeJSON(map[string]any{
-			"type":             "iceBindingRequest",
+			"type":              "iceBindingRequest",
 			"hasICEControlling": m.Contains(stun.AttrICEControlling),
 			"hasICEControlled":  m.Contains(stun.AttrICEControlled),
 			"hasUseCandidate":   m.Contains(stun.AttrUseCandidate),
-			"local":            candidateSummary(local),
-			"remote":           candidateSummary(remote),
-			"pair":             pairSummary(pair),
+			"localType":         local.Type().String(),
+			"remoteType":        remote.Type().String(),
+			"network":           local.NetworkType().String(),
 		})
-		return true
+		// Selecting here bypasses normal USE-CANDIDATE nomination.
+		return selectPairFromObservedBindingRequest
 	})
 
 	api := webrtc.NewAPI(
@@ -319,20 +324,6 @@ func chromeLikeSDP(input string) string {
 	return strings.TrimRight(strings.Join(output, "\r\n"), "\r\n") + "\r\n"
 }
 
-func candidateSummary(candidate ice.Candidate) string {
-	if candidate == nil {
-		return ""
-	}
-	return candidate.String()
-}
-
-func pairSummary(pair *ice.CandidatePair) string {
-	if pair == nil {
-		return ""
-	}
-	return pair.String()
-}
-
 func runInteractive(peer *webrtc.PeerConnection, dataChannel *webrtc.DataChannel, offer string, timeout time.Duration) {
 	var packets atomic.Uint64
 	var bytes atomic.Uint64
@@ -403,6 +394,21 @@ func runInteractive(peer *webrtc.PeerConnection, dataChannel *webrtc.DataChannel
 		connectionState.Store(state.String())
 		writeEvent("connectionState", state.String())
 	})
+	dtlsTransport := peer.SCTP().Transport()
+	dtlsTransport.OnStateChange(func(state webrtc.DTLSTransportState) {
+		writeEvent("dtlsState", state.String())
+	})
+	dtlsTransport.ICETransport().OnSelectedCandidatePairChange(func(pair *webrtc.ICECandidatePair) {
+		if pair == nil || pair.Local == nil || pair.Remote == nil {
+			return
+		}
+		_ = writeJSON(map[string]any{
+			"type":       "selectedCandidatePair",
+			"localType":  pair.Local.Typ.String(),
+			"remoteType": pair.Remote.Typ.String(),
+			"protocol":   pair.Local.Protocol.String(),
+		})
+	})
 	if dataChannel != nil {
 		dataChannel.OnOpen(func() {
 			writeEvent("dataChannelState", "open")
@@ -433,6 +439,9 @@ func runInteractive(peer *webrtc.PeerConnection, dataChannel *webrtc.DataChannel
 		})
 	}
 
+	if err := writeJSON(helperInfo()); err != nil {
+		log.Fatal(err)
+	}
 	if err := writeJSON(map[string]any{
 		"type":       "offer",
 		"sdp":        offer,
@@ -470,6 +479,34 @@ func runInteractive(peer *webrtc.PeerConnection, dataChannel *webrtc.DataChannel
 			}
 		}
 	}
+}
+
+func helperInfo() map[string]any {
+	return map[string]any{
+		"type":   "helperInfo",
+		"build":  helperBuild,
+		"webrtc": moduleVersion("github.com/pion/webrtc/v4"),
+		"ice":    moduleVersion("github.com/pion/ice/v4"),
+		"dtls":   moduleVersion("github.com/pion/dtls/v3"),
+		"stun":   moduleVersion("github.com/pion/stun/v3"),
+	}
+}
+
+func moduleVersion(path string) string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "unknown"
+	}
+	for _, dependency := range info.Deps {
+		if dependency.Path != path {
+			continue
+		}
+		if dependency.Replace != nil {
+			return dependency.Replace.Version
+		}
+		return dependency.Version
+	}
+	return "unknown"
 }
 
 func rtpForwardersFromEnv() map[webrtc.RTPCodecType]net.Conn {
@@ -577,20 +614,20 @@ func readCandidates(peer *webrtc.PeerConnection, scanner *bufio.Scanner) {
 		}
 		if err := peer.AddICECandidate(init); err != nil {
 			_ = writeJSON(map[string]any{
-				"type":      "candidateAddError",
-				"candidate": candidate,
-				"sdpMid":    sdpMid,
-				"mLine":     sdpMLineIndex,
-				"error":     err.Error(),
+				"type":             "candidateAddError",
+				"candidatePresent": candidate != "",
+				"sdpMid":           sdpMid,
+				"mLine":            sdpMLineIndex,
+				"errorType":        fmt.Sprintf("%T", err),
 			})
 			continue
 		}
 		_ = writeJSON(map[string]any{
-			"type":      "candidateAdded",
-			"candidate": candidate,
-			"sdpMid":    sdpMid,
-			"mLine":     sdpMLineIndex,
-			"iceStats":  iceStats(peer),
+			"type":             "candidateAdded",
+			"candidatePresent": candidate != "",
+			"sdpMid":           sdpMid,
+			"mLine":            sdpMLineIndex,
+			"iceStats":         iceStats(peer),
 		})
 	}
 }
