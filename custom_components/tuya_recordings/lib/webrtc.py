@@ -18,6 +18,9 @@ class WebRTCProbeSummary:
         self.remote_candidates_added = 0
         self.mqtt_messages: dict[str, int] = {}
         self.helper_events: dict[str, int] = {}
+        self.remote_sdp_type = "unknown"
+        self.local_setup = "unknown"
+        self.remote_setup = "unknown"
 
     def add_helper_event(self, event: dict[str, Any]) -> None:
         event_type = str(event.get("type") or "")
@@ -47,8 +50,20 @@ class WebRTCProbeSummary:
             f"ice={self.ice_state or 'unknown'}, connection={self.connection_state or 'unknown'}, "
             f"tracks={self.tracks}, first_rtp={self.first_rtp}, result_bytes={self.result_bytes}, "
             f"remote_candidates={self.remote_candidates}, added={self.remote_candidates_added}, "
+            f"sdp={self.remote_sdp_type}, setup={self.local_setup}->{self.remote_setup}, "
             f"mqtt={mqtt_seen}, helper_events={helper}"
         )
+
+
+def sdp_setup_roles(sdp: str) -> str:
+    roles: list[str] = []
+    for line in sdp.replace("\r", "").split("\n"):
+        if not line.startswith("a=setup:"):
+            continue
+        role = line.removeprefix("a=setup:").strip().lower()
+        if role and role not in roles:
+            roles.append(role)
+    return ",".join(roles) or "missing"
 
 
 def ice_servers(config: dict[str, Any]) -> list[dict[str, Any]]:

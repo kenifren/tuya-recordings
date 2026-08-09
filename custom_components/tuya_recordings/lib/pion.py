@@ -55,6 +55,7 @@ def start_pion_helper(
             "TUYA_RECORDINGS_DUMMY_AUDIO_SENDRECV": "1",
             "TUYA_RECORDINGS_TRICKLE_CANDIDATES": "1",
             "TUYA_RECORDINGS_CHROME_SDP": "1",
+            "PION_LOG_TRACE": "dtls",
         }
     )
     if h264_output is not None:

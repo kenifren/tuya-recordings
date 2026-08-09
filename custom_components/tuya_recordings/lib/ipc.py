@@ -27,6 +27,7 @@ from .webrtc import (
     mqtt_session_id,
     normalize_outgoing_candidate,
     p2p_envelope,
+    sdp_setup_roles,
     strip_sdp_candidates,
 )
 
@@ -298,6 +299,8 @@ class _IpcSession:
         self.subscribed = threading.Event()
         self.helper_events: queue.Queue[dict[str, Any]] = queue.Queue()
         self.helper_errors: queue.Queue[str] = queue.Queue()
+        self.local_setup = "unknown"
+        self.remote_setup = "unknown"
         self.proc = start_pion_helper(
             pion_helper_path(),
             config,
@@ -333,6 +336,7 @@ class _IpcSession:
         threading.Thread(target=read_helper_stdout, args=(self.proc, self.helper_events), daemon=True).start()
         threading.Thread(target=read_helper_stderr, args=(self.proc, self.helper_errors), daemon=True).start()
         offer["candidates"] = browser_relay_candidate_list(offer.get("candidates") or [])
+        self.local_setup = sdp_setup_roles(str(offer["sdp"]))
 
         self.mqtt_client.username_pw_set(self.mqtt_username, self.password)
         parsed_url = urlsplit(self.mqtt_url)
@@ -367,6 +371,7 @@ class _IpcSession:
             self.publish(302, "candidate", {"candidate": normalize_outgoing_candidate(candidate), "mode": "webrtc"})
 
         answer_sdp = self.wait_for_answer()
+        self.remote_setup = sdp_setup_roles(answer_sdp)
         try:
             self.proc.stdin.write(json.dumps({"type": "answer", "sdp": answer_sdp}) + "\n")
             self.proc.stdin.flush()
@@ -439,6 +444,9 @@ class _IpcSession:
     def wait_until_connected(self) -> None:
         deadline = time.time() + self.query_timeout
         summary = WebRTCProbeSummary()
+        summary.remote_sdp_type = "answer"
+        summary.local_setup = self.local_setup
+        summary.remote_setup = self.remote_setup
         self.logger.debug("Waiting for Tuya IPC WebRTC connection for %s session %s", self.dev_id, self.session_id)
         while time.time() < deadline:
             for event in self.drain_helper_events():
