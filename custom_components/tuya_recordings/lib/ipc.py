@@ -163,6 +163,8 @@ class TuyaIpcRecordingBackend:
             tid=tid,
         )
         clips: list[dict[str, Any]] = []
+        probe_summary = WebRTCProbeSummary()
+        session.apply_probe_context(probe_summary)
         deadline = time.time() + self.query_timeout
         while time.time() < deadline:
             try:
@@ -170,6 +172,11 @@ class TuyaIpcRecordingBackend:
             except queue.Empty:
                 if clips:
                     return clips
+                continue
+            if payload.get("protocol") == 302 and mqtt_session_id(payload) == session.session_id:
+                session.add_mqtt_message(probe_summary, mqtt_message_type(payload))
+                if mqtt_message_type(payload) == "candidate":
+                    session.add_remote_candidates(payload, probe_summary)
                 continue
             if payload.get("protocol") != 312:
                 continue
@@ -221,6 +228,7 @@ class TuyaIpcRecordingBackend:
         deadline = time.time() + timeout
         playback_started_at: float | None = None
         summary = WebRTCProbeSummary()
+        session.apply_probe_context(summary)
         self.logger.info("Started Tuya IPC recording playback for %s %s-%s session %s", session.dev_id, start, end, session.session_id)
         while time.time() < deadline:
             for event in session.drain_helper_events():
@@ -241,12 +249,12 @@ class TuyaIpcRecordingBackend:
             except queue.Empty:
                 continue
             if payload.get("protocol") == 302 and mqtt_session_id(payload) == session.session_id and mqtt_message_type(payload) == "candidate":
-                summary.add_mqtt_message("candidate")
+                session.add_mqtt_message(summary, "candidate")
                 session.add_remote_candidates(payload, summary)
                 continue
             if payload.get("protocol") != 312 or mqtt_session_id(payload) != session.session_id or mqtt_message_type(payload) != "playbackStart":
                 continue
-            summary.add_mqtt_message("playbackStart")
+            session.add_mqtt_message(summary, "playbackStart")
             playback_started_at = playback_started_at or time.time()
             msg = mqtt_message_body(payload)
             if msg.get("resCode") not in (None, 0):
@@ -299,6 +307,15 @@ class _IpcSession:
         self.subscribed = threading.Event()
         self.helper_events: queue.Queue[dict[str, Any]] = queue.Queue()
         self.helper_errors: queue.Queue[str] = queue.Queue()
+        self.helper_context_events: dict[str, dict[str, Any]] = {}
+        self.stun_requests = 0
+        self.stun_controlling = 0
+        self.stun_controlled = 0
+        self.stun_use_candidate = 0
+        self.remote_candidates = 0
+        self.remote_candidates_added = 0
+        self.mqtt_messages: dict[str, int] = {}
+        self.pending_remote_candidates: list[dict[str, Any]] = []
         self.local_setup = "unknown"
         self.remote_setup = "unknown"
         self.helper_remote_setup = "unknown"
@@ -373,8 +390,7 @@ class _IpcSession:
 
         answer_sdp = self.wait_for_answer()
         self.remote_setup = sdp_setup_roles(answer_sdp)
-        # Some Tuya firmware advertises the active DTLS role but never sends ClientHello.
-        helper_answer_sdp = answer_sdp.replace("a=setup:active", "a=setup:passive")
+        helper_answer_sdp = answer_sdp
         self.helper_remote_setup = sdp_setup_roles(helper_answer_sdp)
         try:
             self.proc.stdin.write(json.dumps({"type": "answer", "sdp": helper_answer_sdp}) + "\n")
@@ -438,8 +454,7 @@ class _IpcSession:
             if message_type == "answer":
                 answer = mqtt_message_body(payload).get("sdp") or mqtt_message_body(payload).get("value")
                 if answer:
-                    for candidate in pending_candidates:
-                        self.inbound.put(candidate)
+                    self.pending_remote_candidates = pending_candidates
                     return answer
             if message_type == "disconnect":
                 raise RuntimeError(f"Tuya camera disconnected before answer: {mqtt_message_body(payload)}")
@@ -448,15 +463,17 @@ class _IpcSession:
     def wait_until_connected(self) -> None:
         deadline = time.time() + self.query_timeout
         summary = WebRTCProbeSummary()
-        summary.remote_sdp_type = "answer"
-        summary.local_setup = self.local_setup
-        summary.remote_setup = self.remote_setup
-        summary.helper_remote_setup = self.helper_remote_setup
+        self.apply_probe_context(summary)
+        for payload in self.pending_remote_candidates:
+            self.add_mqtt_message(summary, "candidate")
+            self.add_remote_candidates(payload, summary)
+        self.pending_remote_candidates.clear()
         self.logger.debug("Waiting for Tuya IPC WebRTC connection for %s session %s", self.dev_id, self.session_id)
         while time.time() < deadline:
             for event in self.drain_helper_events():
                 summary.add_helper_event(event)
                 if event.get("type") == "connectionState" and event.get("state") == "connected":
+                    self.drain_queued_remote_candidates(summary)
                     self.logger.info("Tuya IPC WebRTC connected for %s session %s: %s", self.dev_id, self.session_id, summary.describe())
                     return
             try:
@@ -465,7 +482,7 @@ class _IpcSession:
                 continue
             if payload.get("protocol") != 302 or mqtt_session_id(payload) != self.session_id:
                 continue
-            summary.add_mqtt_message(mqtt_message_type(payload))
+            self.add_mqtt_message(summary, mqtt_message_type(payload))
             if mqtt_message_type(payload) == "candidate":
                 self.add_remote_candidates(payload, summary)
         error_detail = f"{summary.describe()}; {self.drain_helper_errors()}"
@@ -480,18 +497,39 @@ class _IpcSession:
             if not candidate:
                 continue
             summary.remote_candidates += 1
+            self.remote_candidates += 1
             try:
                 self.proc.stdin.write(json.dumps({"type": "candidate", "candidate": str(candidate).removeprefix("a=")}) + "\n")
                 self.proc.stdin.flush()
                 summary.remote_candidates_added += 1
+                self.remote_candidates_added += 1
             except BrokenPipeError as err:
                 raise RuntimeError(
                     "Tuya IPC WebRTC helper exited while adding candidate: "
                     f"{summary.describe()}; {self.drain_helper_errors()}"
                 ) from err
 
+    def drain_queued_remote_candidates(self, summary: WebRTCProbeSummary) -> None:
+        deferred: list[dict[str, Any]] = []
+        while True:
+            try:
+                payload = self.inbound.get_nowait()
+            except queue.Empty:
+                break
+            if (
+                payload.get("protocol") == 302
+                and mqtt_session_id(payload) == self.session_id
+                and mqtt_message_type(payload) == "candidate"
+            ):
+                self.add_mqtt_message(summary, "candidate")
+                self.add_remote_candidates(payload, summary)
+            else:
+                deferred.append(payload)
+        for payload in deferred:
+            self.inbound.put(payload)
+
     def drain_helper_events(self) -> list[dict[str, Any]]:
-        return drain_helper_events(
+        events = drain_helper_events(
             self.helper_events,
             self.mqtt_client,
             self.topic,
@@ -501,6 +539,37 @@ class _IpcSession:
             self.session_id,
             self.protocol_version,
         )
+        context_types = {"helperInfo", "selectedCandidatePair", "iceState", "connectionState", "dtlsState"}
+        for event in events:
+            event_type = str(event.get("type") or "")
+            if event_type in context_types:
+                self.helper_context_events[event_type] = event
+            elif event_type == "iceBindingRequest":
+                self.stun_requests += 1
+                self.stun_controlling += int(bool(event.get("hasICEControlling")))
+                self.stun_controlled += int(bool(event.get("hasICEControlled")))
+                self.stun_use_candidate += int(bool(event.get("hasUseCandidate")))
+        return events
+
+    def apply_probe_context(self, summary: WebRTCProbeSummary) -> None:
+        summary.remote_sdp_type = "answer"
+        summary.local_setup = self.local_setup
+        summary.remote_setup = self.remote_setup
+        summary.helper_remote_setup = self.helper_remote_setup
+        summary.stun_requests = self.stun_requests
+        summary.stun_controlling = self.stun_controlling
+        summary.stun_controlled = self.stun_controlled
+        summary.stun_use_candidate = self.stun_use_candidate
+        summary.remote_candidates = self.remote_candidates
+        summary.remote_candidates_added = self.remote_candidates_added
+        summary.mqtt_messages = dict(self.mqtt_messages)
+        for event in self.helper_context_events.values():
+            summary.add_helper_event(event)
+
+    def add_mqtt_message(self, summary: WebRTCProbeSummary, message_type: str | None) -> None:
+        summary.add_mqtt_message(message_type)
+        if message_type:
+            self.mqtt_messages[message_type] = self.mqtt_messages.get(message_type, 0) + 1
 
     def drain_helper_errors(self) -> str:
         return drain_helper_errors(self.helper_errors)

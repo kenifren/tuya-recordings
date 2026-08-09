@@ -22,6 +22,14 @@ class WebRTCProbeSummary:
         self.local_setup = "unknown"
         self.remote_setup = "unknown"
         self.helper_remote_setup = "unknown"
+        self.dtls_state = "unknown"
+        self.selected_pair = "none"
+        self.stun_requests = 0
+        self.stun_controlling = 0
+        self.stun_controlled = 0
+        self.stun_use_candidate = 0
+        self.helper_build = "unknown"
+        self.helper_versions = "unknown"
 
     def add_helper_event(self, event: dict[str, Any]) -> None:
         event_type = str(event.get("type") or "")
@@ -32,6 +40,23 @@ class WebRTCProbeSummary:
             self.ice_state = str(event.get("state") or "")
         elif event_type == "connectionState":
             self.connection_state = str(event.get("state") or "")
+        elif event_type == "dtlsState":
+            self.dtls_state = str(event.get("state") or "")
+        elif event_type == "selectedCandidatePair":
+            local_type = str(event.get("localType") or "unknown")
+            remote_type = str(event.get("remoteType") or "unknown")
+            protocol = str(event.get("protocol") or "unknown")
+            self.selected_pair = f"{local_type}/{remote_type}/{protocol}"
+        elif event_type == "iceBindingRequest":
+            self.stun_requests += 1
+            self.stun_controlling += int(bool(event.get("hasICEControlling")))
+            self.stun_controlled += int(bool(event.get("hasICEControlled")))
+            self.stun_use_candidate += int(bool(event.get("hasUseCandidate")))
+        elif event_type == "helperInfo":
+            self.helper_build = str(event.get("build") or "unknown")
+            self.helper_versions = "/".join(
+                str(event.get(name) or "unknown") for name in ("webrtc", "ice", "dtls", "stun")
+            )
         elif event_type == "track":
             self.tracks += 1
         elif event_type == "firstRTP":
@@ -55,6 +80,10 @@ class WebRTCProbeSummary:
             f"tracks={self.tracks}, first_rtp={self.first_rtp}, result_bytes={self.result_bytes}, "
             f"remote_candidates={self.remote_candidates}, added={self.remote_candidates_added}, "
             f"sdp={self.remote_sdp_type}, setup={setup}, "
+            f"dtls={self.dtls_state}, selected_pair={self.selected_pair}, "
+            f"stun=in:{self.stun_requests}/controlling:{self.stun_controlling}/"
+            f"controlled:{self.stun_controlled}/use:{self.stun_use_candidate}, "
+            f"helper={self.helper_build}, pion={self.helper_versions}, "
             f"mqtt={mqtt_seen}, helper_events={helper}"
         )
 
